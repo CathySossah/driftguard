@@ -1,0 +1,40 @@
+# Blueprint Render : crée l'API (Docker) et le frontend (site statique).
+services:
+  - type: web
+    name: driftguard-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: free            # Si le service plante faute de mémoire (512 Mo), passer à "standard" (2 Go)
+    healthCheckPath: /
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_SIGNUP_CODE
+        generateValue: true   # code à saisir pour créer un compte admin (visible dans Render > Environment)
+      - key: CORS_ORIGINS
+        sync: false       # URL du frontend, ex : https://driftguard-web.onrender.com
+      - key: ADMIN_EMAIL
+        sync: false       # compte administrateur créé automatiquement à chaque démarrage
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEMO_USER_EMAIL
+        sync: false       # compte utilisateur de démonstration (optionnel)
+      - key: DEMO_USER_PASSWORD
+        sync: false
+      - key: SEED_DEMO
+        value: "true"     # crée un dataset de démo et entraîne un premier modèle au démarrage
+
+  - type: web
+    name: driftguard-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false       # URL de l'API, ex : https://driftguard-api.onrender.com (sans slash final)
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
