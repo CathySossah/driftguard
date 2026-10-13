@@ -10,9 +10,11 @@ Variables d'environnement (toutes optionnelles) :
                                                simulées) et entraîne un premier modèle en
                                                tâche de fond
 """
+import json
 import logging
 import os
 import threading
+from datetime import datetime
 
 from app.database import SessionLocal
 from app import models
@@ -41,10 +43,12 @@ def _ensure_user(db, email: str, password: str, name: str, role: models.RoleEnum
 
 
 def _seed_demo(db) -> None:
+    from app.demo_model import BUNDLE_PATH, METRICS_PATH, LOCAL_RUN_ID, DATASET_NAME
+
     if db.query(models.Dataset).count() > 0:
         return
     dataset = models.Dataset(
-        name="Démo — Transactions mobile money (données simulées)",
+        name=DATASET_NAME,
         domain=models.DomainEnum.finance,
         source_path=None,
     )
@@ -53,6 +57,30 @@ def _seed_demo(db) -> None:
     db.refresh(dataset)
 
     admin = db.query(models.User).filter(models.User.role == models.RoleEnum.admin).first()
+
+    # Cas normal (image Docker) : le modèle de démonstration est déjà construit.
+    # On l'enregistre simplement, sans entraînement ni MLflow : très léger en mémoire.
+    if BUNDLE_PATH.exists():
+        try:
+            metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8")).get("metrics")
+        except Exception:
+            metrics = None
+        version = models.ModelVersion(
+            dataset_id=dataset.id,
+            mlflow_run_id=LOCAL_RUN_ID,
+            version_number=1,
+            status=models.ModelStatusEnum.en_production,
+            metrics=metrics,
+            deployed_at=datetime.utcnow(),
+        )
+        db.add(version)
+        db.commit()
+        log_action(db, action="model.initial_training", user_id=admin.id if admin else None,
+                   target=f"Dataset {dataset.name} — modèle de démonstration pré-entraîné")
+        logger.info("Dataset et modèle de démonstration enregistrés (pré-entraîné, sans MLflow)")
+        return
+
+    # Secours (développement local, sans image Docker) : entraînement en arrière-plan.
     job = models.RetrainingJob(
         alert_id=None,
         dataset_id=dataset.id,

@@ -127,4 +127,23 @@ train_on(pd.DataFrame({"id": np.arange(300), "nom": [f"n{i}" for i in range(300)
 # valeurs manquantes partout
 train_on(pd.DataFrame({"a": [np.nan] * 40, "b": r8.choice(["x", None], 40), "y": r8.choice([0, 1], 40)}), "y", "colonnes presque vides")
 
+print("=== 9. Modèle de démonstration pré-entraîné (construit sans MLflow) ===")
+import pathlib
+import tempfile
+
+import joblib
+
+from app import demo_model
+
+with tempfile.TemporaryDirectory() as tmp:
+    bundle_path = pathlib.Path(tmp) / "demo_model.joblib"
+    demo_model.build(bundle_path)
+    bundle = joblib.load(bundle_path)
+night = mf.predict_and_explain(bundle["model"], bundle["meta"],
+                               {"TransactionAmt": 80, "purchase_hour": 2, "device_type": "mobile", "card_type": "visa"})
+day = mf.predict_and_explain(bundle["model"], bundle["meta"],
+                             {"TransactionAmt": 80, "purchase_hour": 11, "device_type": "desktop", "card_type": "amex"})
+print("   nuit/mobile :", round(night["probability"], 3), "| jour/desktop :", round(day["probability"], 3))
+assert night["probability"] > day["probability"] + 0.3
+
 print("\n✅ test_ml_features : OK")

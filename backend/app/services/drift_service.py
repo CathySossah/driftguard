@@ -11,8 +11,6 @@ mémoire (revue de littérature sur les méthodes de détection).
 from typing import Any
 
 import pandas as pd
-from evidently import Report
-from evidently.presets import DataDriftPreset
 
 
 def compute_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> dict[str, Any]:
@@ -24,6 +22,10 @@ def compute_drift(reference_df: pd.DataFrame, current_df: pd.DataFrame) -> dict[
       - columns : détail par variable (p-value du test statistique, dérive ou non),
         alimente la page "Monitoring détaillé" (tableau "Dérive par variable").
     """
+    # Import tardif : Evidently est lourd en mémoire, on ne le charge qu'au premier calcul.
+    from evidently import Report
+    from evidently.presets import DataDriftPreset
+
     report = Report(metrics=[DataDriftPreset()])
     snapshot = report.run(reference_data=reference_df, current_data=current_df)
     result = snapshot.dict()

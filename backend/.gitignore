@@ -4,3 +4,5 @@ __pycache__/
 mlruns/
 data/
 .env
+app/demo_assets/*.joblib
+app/demo_assets/*.json

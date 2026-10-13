@@ -307,7 +307,7 @@ def split_train_test(X: pd.DataFrame, y: pd.Series):
     return X, X, y, y, "données d'entraînement (échantillon trop petit pour réserver un jeu de test)"
 
 
-def fit_and_evaluate(X: pd.DataFrame, y: pd.Series, n_estimators: int = 150, max_depth: int = 8):
+def fit_and_evaluate(X: pd.DataFrame, y: pd.Series, n_estimators: int = 150, max_depth: int = 8, min_samples_leaf: int = 1):
     """
     Entraîne un RandomForest et calcule ses métriques, sans jamais refuser un
     jeu de données pour sa taille ou son déséquilibre. Retourne
@@ -327,7 +327,8 @@ def fit_and_evaluate(X: pd.DataFrame, y: pd.Series, n_estimators: int = 150, max
         notes.append("Classe minoritaire très rare (moins de 8 exemples) : métriques peu fiables.")
 
     model = RandomForestClassifier(
-        n_estimators=n_estimators, max_depth=max_depth, class_weight="balanced", random_state=42,
+        n_estimators=n_estimators, max_depth=max_depth, min_samples_leaf=min_samples_leaf,
+        class_weight="balanced", random_state=42,
     ).fit(X_tr, y_tr)
     y_pred = model.predict(X_te)
 

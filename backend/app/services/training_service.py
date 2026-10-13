@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import joblib
-import mlflow
-import mlflow.sklearn
 
 from app import models
 from app.services.real_data_service import load_dataframe, DatasetLoadError
@@ -29,13 +27,15 @@ from app.services.ml_features import (  # noqa: F401  (constantes ré-exportées
 
 logger = logging.getLogger("driftguard.training")
 
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///./mlflow.db")
+from app.services.prediction_service import MLFLOW_TRACKING_URI, BUNDLE_ARTIFACT_NAME  # noqa: F401
+
 MLFLOW_EXPERIMENT_NAME = "driftguard-fraud-detection"
-BUNDLE_ARTIFACT_NAME = "model_bundle.joblib"
 
 
 def _ensure_experiment() -> None:
     """Configure MLflow ; MLFLOW_ARTIFACT_ROOT (optionnel) fixe le dossier des artefacts."""
+    import mlflow  # import tardif : MLflow est lourd en mémoire, on ne le charge qu'au premier entraînement
+
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     root = os.getenv("MLFLOW_ARTIFACT_ROOT")
     if root and mlflow.get_experiment_by_name(MLFLOW_EXPERIMENT_NAME) is None:
@@ -56,6 +56,9 @@ def train_and_log_model(dataset: Optional[models.Dataset], drift_level: float = 
     Retourne un dict {success, mlflow_run_id, metrics, error_message}.
     """
     try:
+        import mlflow  # import tardif (voir _ensure_experiment)
+        import mlflow.sklearn
+
         if dataset is not None and dataset.source_path:
             try:
                 df = load_dataframe(dataset.source_path)

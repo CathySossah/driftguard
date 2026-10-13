@@ -7,6 +7,7 @@ En développement, APScheduler (in-process) suffit. En production à plus grande
 POST /monitoring/run-now/{model_version_id} pour chaque modèle en production.
 """
 import logging
+import os
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -57,6 +58,11 @@ def run_monitoring_cycle() -> None:
 
 
 def start_scheduler() -> None:
+    # Mode faible mémoire (hébergeur gratuit à 512 Mo) : pas de monitoring automatique,
+    # le bouton « lancer maintenant » de la page Monitoring reste disponible.
+    if os.getenv("LOW_MEMORY", "").strip().lower() in {"1", "true", "yes", "oui", "on"}:
+        logger.info("LOW_MEMORY actif : planificateur de monitoring désactivé")
+        return
     if not scheduler.running:
         scheduler.add_job(
             run_monitoring_cycle,

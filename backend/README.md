@@ -233,6 +233,16 @@ Les adaptations sont consignées dans le paramètre MLflow `notes`. Seuls échec
 colonne cible identifiable, aucune ligne avec cible renseignée, ou aucune variable explicative.
 **Avec très peu de données, les métriques sont peu fiables** : à signaler dans le mémoire.
 
+## Hébergement à faible mémoire (512 Mo)
+
+- Le modèle de démonstration est **pré-entraîné à la construction de l'image Docker**
+  (`python -m app.demo_model`, sans MLflow) et simplement enregistré en base au démarrage
+  (`SEED_DEMO=true`) : plus d'entraînement au démarrage, donc plus de redémarrages en boucle.
+- `LOW_MEMORY=true` désactive le monitoring automatique (le bouton « lancer maintenant » reste
+  disponible) ; MLflow et Evidently ne sont chargés qu'au premier entraînement / calcul de dérive.
+- Entraîner un modèle ou calculer la dérive reste gourmand : sur 512 Mo, cela peut encore
+  dépasser la limite. Un plan à 2 Go lève ce risque.
+
 ## Sécurité et démarrage automatique
 
 - **Code d'invitation admin** : si `ADMIN_SIGNUP_CODE` est défini, créer un compte

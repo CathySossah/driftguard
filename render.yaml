@@ -23,7 +23,9 @@ services:
       - key: DEMO_USER_PASSWORD
         sync: false
       - key: SEED_DEMO
-        value: "true"     # crée un dataset de démo et entraîne un premier modèle au démarrage
+        value: "true"     # enregistre au démarrage un dataset et un modèle de démonstration pré-entraînés
+      - key: LOW_MEMORY
+        value: "true"     # hébergeur à 512 Mo : pas de monitoring automatique, imports lourds différés
 
   - type: web
     name: driftguard-web
