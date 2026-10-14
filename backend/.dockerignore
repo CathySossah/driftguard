@@ -4,3 +4,4 @@ __pycache__
 mlruns
 data
 test_*.py
+.env

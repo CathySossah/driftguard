@@ -15,6 +15,9 @@ logger = logging.getLogger("driftguard.migrations")
 
 _COLUMNS = [
     ("prediction_logs", "probability", "FLOAT"),
+    ("retraining_jobs", "progress", "INTEGER DEFAULT 0"),
+    ("retraining_jobs", "progress_label", "VARCHAR(255)"),
+    ("retraining_jobs", "training_results", "JSON"),
 ]
 
 

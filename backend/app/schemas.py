@@ -125,6 +125,41 @@ class RetrainingJobOut(BaseModel):
     new_model_version_id: Optional[str]
     status: JobStatusEnum
     error_message: Optional[str]
+    dataset_id: Optional[str] = None
+    progress: Optional[int] = 0
+    progress_label: Optional[str] = None
+    training_results: Optional[dict] = None
+
+
+# ---------- Paramètres ----------
+class SettingsOut(BaseModel):
+    alert_threshold: float
+    pvalue_threshold: float
+    variable_thresholds: dict[str, float]
+    email_alerts_enabled: bool = True
+    email_provider: Optional[str] = None  # 'brevo', 'smtp' ou None (aucun service d'envoi configuré)
+
+
+class SettingsUpdate(BaseModel):
+    alert_threshold: Optional[float] = None
+    pvalue_threshold: Optional[float] = None
+    # nom de variable -> seuil ; null retire le seuil personnalisé de la variable
+    variable_thresholds: Optional[dict[str, Optional[float]]] = None
+    email_alerts_enabled: Optional[bool] = None
+
+
+class TrainRequest(BaseModel):
+    """Choix de l'administrateur pour un entraînement (onglet Datasets)."""
+    algorithms: list[str] = ["random_forest"]
+    balancing: str = "class_weight"
+    # Statut de la nouvelle version : "staging" ou "en_production". Sans choix : production si le dataset
+    # n'a pas encore de modèle en production, staging sinon (un modèle en production n'est jamais
+    # remplacé sans promotion explicite).
+    target_status: Optional[str] = None
+
+
+class ModelStatusUpdate(BaseModel):
+    status: ModelStatusEnum
 
 
 # ---------- Predictions ----------

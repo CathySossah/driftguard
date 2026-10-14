@@ -17,6 +17,8 @@ perturbation (model-agnostic), pas un calcul de valeurs SHAP exactes.
 from __future__ import annotations
 
 import math
+import time
+import warnings
 from typing import Any, Optional
 
 import numpy as np
@@ -26,6 +28,12 @@ from sklearn.metrics import accuracy_score, f1_score, recall_score, precision_sc
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import confusion_matrix, roc_auc_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 
 from app.services.data_simulator import get_reference_dataset, get_current_batch
 from app.services.real_data_service import guess_target_column, looks_like_id
@@ -342,6 +350,198 @@ def fit_and_evaluate(X: pd.DataFrame, y: pd.Series, n_estimators: int = 150, max
         "precision": round(float(precision_score(y_te, y_pred, average=average, zero_division=0, **extra)), 4),
     }
     return model, metrics, notes
+
+
+# ---------------------------------------------------------------------------
+# Comparaison de plusieurs algorithmes, avec choix de la méthode d'équilibrage
+# ---------------------------------------------------------------------------
+ALGORITHMS = {
+    "random_forest": "Random Forest",
+    "logistic_regression": "Régression logistique",
+    "gradient_boosting": "Gradient Boosting",
+}
+BALANCING_METHODS = {
+    "none": "Aucun équilibrage",
+    "class_weight": "Pondération des classes",
+    "oversampling": "Sur-échantillonnage",
+    "undersampling": "Sous-échantillonnage",
+}
+DEFAULT_ALGORITHMS = ["random_forest"]
+DEFAULT_BALANCING = "class_weight"
+MAX_BALANCED_ROWS = 20000
+
+
+def normalize_training_options(algorithms, balancing) -> tuple[list[str], str]:
+    """Nettoie le choix de l'utilisateur : ignore les valeurs inconnues, retire les doublons."""
+    chosen: list[str] = []
+    for a in (algorithms or []):
+        if a in ALGORITHMS and a not in chosen:
+            chosen.append(a)
+    return (chosen or list(DEFAULT_ALGORITHMS)), (balancing if balancing in BALANCING_METHODS else DEFAULT_BALANCING)
+
+
+def balance_training_data(X: pd.DataFrame, y: pd.Series, method: str):
+    """
+    Rééquilibre les classes du jeu d'ENTRAÎNEMENT uniquement (le jeu de test garde sa
+    distribution réelle, sinon les métriques seraient faussées).
+    - oversampling  : duplique au hasard les exemples des classes rares jusqu'à la taille de la plus grande ;
+    - undersampling : réduit au hasard les classes majoritaires (au moins 20 exemples par classe si possible) ;
+    - class_weight  : aucune modification des données (la pondération est faite par l'algorithme).
+    """
+    if method not in ("oversampling", "undersampling"):
+        return X, y
+    counts = y.value_counts()
+    if len(counts) < 2:
+        return X, y
+
+    rng = np.random.default_rng(42)
+    y_arr = y.to_numpy()
+    if method == "oversampling":
+        target = int(counts.max())
+        if target * len(counts) > MAX_BALANCED_ROWS:
+            target = max(MAX_BALANCED_ROWS // len(counts), 1)
+    else:
+        floor = max(int(counts.min()), 20)
+
+    picked = []
+    for cls, size in counts.items():
+        idx = np.flatnonzero(y_arr == cls)
+        if method == "oversampling":
+            picked.append(rng.choice(idx, size=target, replace=size < target))
+        else:
+            picked.append(rng.choice(idx, size=min(int(size), floor), replace=False))
+    chosen = rng.permutation(np.concatenate(picked))
+    return X.iloc[chosen].reset_index(drop=True), y.iloc[chosen].reset_index(drop=True)
+
+
+def _build_estimator(algorithm: str, balancing: str):
+    class_weight = "balanced" if balancing == "class_weight" else None
+    if algorithm == "random_forest":
+        return RandomForestClassifier(
+            n_estimators=150, max_depth=8, class_weight=class_weight, random_state=42, n_jobs=1
+        )
+    if algorithm == "logistic_regression":
+        return make_pipeline(
+            StandardScaler(),
+            LogisticRegression(max_iter=1000, class_weight=class_weight, random_state=42),
+        )
+    if algorithm == "gradient_boosting":
+        return GradientBoostingClassifier(n_estimators=100, max_depth=3, random_state=42)
+    raise ValueError(f"Algorithme inconnu : {algorithm}")
+
+
+def feature_importances(model):
+    """Importance des variables, quel que soit l'algorithme (arbres, ou coefficients pour la régression)."""
+    est = model.steps[-1][1] if hasattr(model, "steps") else model
+    if hasattr(est, "feature_importances_"):
+        return est.feature_importances_
+    if hasattr(est, "coef_"):
+        imp = np.abs(est.coef_).mean(axis=0)
+        total = imp.sum()
+        return imp / total if total > 0 else imp
+    return None
+
+
+def _evaluate(model, X_te: pd.DataFrame, y_te: pd.Series, classes: list, class_labels: dict | None = None):
+    """Retourne (métriques, matrice de confusion). Lignes = classe réelle, colonnes = classe prédite."""
+    labels = class_labels or {}
+    n_classes = len(classes)
+    y_pred = model.predict(X_te)
+    average = "binary" if n_classes == 2 else "weighted"
+    extra = {"pos_label": classes[1]} if n_classes == 2 else {}
+    auc = None
+    if n_classes == 2 and y_te.nunique() == 2:
+        try:
+            auc = round(float(roc_auc_score(y_te, model.predict_proba(X_te)[:, 1])), 4)
+        except Exception:
+            auc = None
+    metrics = {
+        "accuracy": round(float(accuracy_score(y_te, y_pred)), 4),
+        "precision": round(float(precision_score(y_te, y_pred, average=average, zero_division=0, **extra)), 4),
+        "recall": round(float(recall_score(y_te, y_pred, average=average, zero_division=0, **extra)), 4),
+        "f1": round(float(f1_score(y_te, y_pred, average=average, zero_division=0, **extra)), 4),
+        "roc_auc": auc,
+    }
+    confusion = {
+        "labels": [str(labels.get(class_key(c), class_key(c))) for c in classes],
+        "matrix": confusion_matrix(y_te, y_pred, labels=classes).tolist(),
+    }
+    return metrics, confusion
+
+
+def train_and_compare(
+    X: pd.DataFrame, y: pd.Series, algorithms=None, balancing=None, progress=None, class_labels=None,
+) -> dict:
+    """
+    Entraîne chaque algorithme choisi sur le même jeu d'entraînement (rééquilibré selon la
+    méthode choisie), les évalue sur le même jeu de test, et retient le meilleur (F1 le plus
+    élevé, puis accuracy). `progress(pourcentage, libellé)` est appelé au fil de l'avancement
+    (de 30 % à 90 %). Un algorithme qui échoue est signalé sans arrêter les autres.
+    """
+    algorithms, balancing = normalize_training_options(algorithms, balancing)
+
+    def report(pct: float, label: str) -> None:
+        if progress:
+            progress(int(pct), label)
+
+    classes = sorted(y.unique().tolist())
+    n_classes = len(classes)
+    X_tr, X_te, y_tr, y_te, evaluation = split_train_test(X, y)
+
+    notes: list[str] = []
+    if not evaluation.startswith("jeu de test"):
+        notes.append("Échantillon très petit : les modèles sont évalués sur leurs propres données d'entraînement (métriques optimistes).")
+    if n_classes < 2:
+        notes.append("Une seule classe est présente dans les données : le modèle prédira toujours cette classe.")
+    elif int(y.value_counts().min()) < 8:
+        notes.append("Classe minoritaire très rare (moins de 8 exemples) : métriques peu fiables.")
+
+    report(30, f"Équilibrage : {BALANCING_METHODS[balancing]}")
+    X_fit, y_fit = balance_training_data(X_tr, y_tr, balancing)
+
+    results: list[dict] = []
+    fitted: dict[str, Any] = {}
+    n = len(algorithms)
+    for i, algo in enumerate(algorithms):
+        label = ALGORITHMS[algo]
+        report(30 + 60 * i / n, f"Entraînement : {label} ({i + 1}/{n})")
+        started = time.perf_counter()
+        try:
+            model = _build_estimator(algo, balancing)
+            fit_kwargs = {}
+            if algo == "gradient_boosting" and balancing == "class_weight" and n_classes > 1:
+                fit_kwargs["sample_weight"] = compute_sample_weight("balanced", y_fit)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model.fit(X_fit, y_fit, **fit_kwargs)
+            metrics, confusion = _evaluate(model, X_te, y_te, classes, class_labels)
+            results.append({
+                "algorithm": algo, "label": label, "metrics": metrics, "confusion_matrix": confusion,
+                "seconds": round(time.perf_counter() - started, 2),
+            })
+            fitted[algo] = model
+        except Exception as exc:  # un algorithme en échec n'empêche pas les autres
+            results.append({"algorithm": algo, "label": label, "error": str(exc)[:200]})
+        report(30 + 60 * (i + 1) / n, f"{label} terminé")
+
+    ok = [r for r in results if "metrics" in r]
+    if not ok:
+        raise TrainingError("Aucun algorithme n'a pu être entraîné : " + " | ".join(
+            f"{r['label']} : {r.get('error', '?')}" for r in results))
+    best = max(ok, key=lambda r: (r["metrics"]["f1"], r["metrics"]["accuracy"]))
+    best["best"] = True
+    best_metrics = {k: best["metrics"][k] for k in ("accuracy", "f1", "recall", "precision")}
+
+    return {
+        "model": fitted[best["algorithm"]],
+        "metrics": best_metrics,
+        "best": best["algorithm"],
+        "balancing": balancing,
+        "algorithms": algorithms,
+        "results": results,
+        "evaluation": evaluation,
+        "notes": notes,
+    }
 
 
 # ---------------------------------------------------------------------------

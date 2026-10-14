@@ -14,10 +14,11 @@ from app.services.drift_service import compute_drift
 from app.services.data_simulator import get_reference_dataset, get_current_batch
 from app.services.real_data_service import load_dataframe, split_reference_current, looks_like_id, DatasetLoadError
 from app.services import scenario_state
+from app.services.settings_service import get_settings
+from app.services.email_service import start_alert_notification
 
-# Seuil de dérive par défaut. En production, ce seuil doit être configurable
-# par variable/dataset (cf. page "Paramètres" de la maquette) — actuellement
-# une valeur globale unique, à raffiner en un seuil par ModelVersion/Dataset.
+# Seuil d'alerte par défaut (part de variables en dérive). Il est modifiable depuis la page
+# « Paramètres » (settings_service.py) ; cette valeur n'est qu'un repli.
 DEFAULT_DRIFT_THRESHOLD = 0.20
 
 
@@ -29,6 +30,11 @@ def compute_drift_for_version(db: Session, version: models.ModelVersion) -> dict
     contrôlée (cf. scenario_state.py) pour permettre la démonstration.
     """
     dataset = db.query(models.Dataset).filter(models.Dataset.id == version.dataset_id).first()
+    drift_settings = get_settings(db)
+    drift_kwargs = {
+        "pvalue_threshold": drift_settings["pvalue_threshold"],
+        "variable_thresholds": drift_settings["variable_thresholds"],
+    }
 
     if dataset is not None and dataset.source_path:
         try:
@@ -53,7 +59,7 @@ def compute_drift_for_version(db: Session, version: models.ModelVersion) -> dict
             reference = reference[feature_cols]
             current = current[feature_cols]
 
-            result = compute_drift(reference, current)
+            result = compute_drift(reference, current, **drift_kwargs)
             return {
                 "drift_score": result["drift_score"],
                 "drift_detected": result["drift_detected"],
@@ -65,7 +71,7 @@ def compute_drift_for_version(db: Session, version: models.ModelVersion) -> dict
     drift_level = scenario_state.advance_drift_level(version.id)
     reference = get_reference_dataset()
     current = get_current_batch(drift_level=drift_level)
-    result = compute_drift(reference, current)
+    result = compute_drift(reference, current, **drift_kwargs)
     return {
         "drift_score": result["drift_score"],
         "drift_detected": result["drift_detected"],
@@ -87,9 +93,14 @@ def process_monitoring_result(
     drift_score: float,
     drift_detected: bool,
     report_json: dict[str, Any] | None,
-    threshold: float = DEFAULT_DRIFT_THRESHOLD,
+    threshold: float | None = None,
 ) -> models.MonitoringRun:
-    """Enregistre le run et crée une alerte 'en_attente' si le seuil est dépassé."""
+    """
+    Enregistre le run et crée une alerte 'en_attente' si le seuil d'alerte est atteint.
+    Sans seuil explicite, on utilise celui de la page Paramètres.
+    """
+    if threshold is None:
+        threshold = get_settings(db)["alert_threshold"]
     run = models.MonitoringRun(
         model_version_id=model_version_id,
         drift_score=drift_score,
@@ -118,7 +129,8 @@ def process_monitoring_result(
             )
             db.add(alert)
             db.commit()
-            # TODO : brancher ici l'envoi d'e-mail réel (SMTP) aux administrateurs.
+            db.refresh(alert)
+            start_alert_notification(alert.id)  # e-mail aux administrateurs (en arrière-plan, jamais bloquant)
         # Sinon : une alerte est déjà en attente de validation pour ce modèle,
         # on évite de multiplier les notifications pour la même dérive en cours.
 

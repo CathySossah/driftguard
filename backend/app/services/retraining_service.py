@@ -17,7 +17,36 @@ from app.services import scenario_state
 logger = logging.getLogger("driftguard.retraining")
 
 
-def execute_initial_training_job(job_id: str, dataset_id: str) -> None:
+def _progress_updater(job_id: str):
+    """
+    Retourne une fonction (pourcentage, libellé) qui enregistre l'avancement du job en base,
+    avec sa propre session (l'entraînement tourne dans un thread séparé de la requête).
+    """
+    def update(percent: int, label: str) -> None:
+        db = SessionLocal()
+        try:
+            db.query(models.RetrainingJob).filter(models.RetrainingJob.id == job_id).update(
+                {"progress": max(0, min(99, int(percent))), "progress_label": str(label)[:250]}
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    return update
+
+
+def _job_config(job: models.RetrainingJob) -> dict:
+    """Choix d'algorithmes / d'équilibrage enregistrés à la création du job (vide pour un ré-entraînement automatique)."""
+    return (job.training_results or {}).get("config") or {}
+
+
+def _store_results(job: models.RetrainingJob, result: dict) -> None:
+    """Fusionne la configuration du job avec les résultats de l'entraînement (nouvel objet : SQLAlchemy détecte le changement)."""
+    config = _job_config(job)
+    job.training_results = {"config": config, **(result.get("training_results") or {})}
+
+
+def execute_initial_training_job(job_id: str, dataset_id: str, algorithms=None, balancing=None) -> None:
     """
     Comme execute_retraining_job, mais pour le tout premier modèle d'un
     dataset fraîchement importé (pas d'alerte à l'origine, donc pas de
@@ -32,19 +61,39 @@ def execute_initial_training_job(job_id: str, dataset_id: str) -> None:
             logger.error("Job %s ou dataset %s introuvable", job_id, dataset_id)
             return
 
-        result = train_and_log_model(dataset=dataset, drift_level=0.0)
+        config = _job_config(job)
+        result = train_and_log_model(
+            dataset=dataset, drift_level=0.0,
+            algorithms=algorithms or config.get("algorithms"),
+            balancing=balancing or config.get("balancing"),
+            progress=_progress_updater(job_id),
+        )
         job.finished_at = datetime.utcnow()
 
         if result["success"]:
             if not dataset.target_column and result.get("target_column"):
                 dataset.target_column = result["target_column"]  # colonne choisie automatiquement
+
+            # Entraîner de nouveau le même dataset (autres algorithmes, autre équilibrage...) crée une
+            # nouvelle version. Sans choix explicite, elle va en production s'il n'y a pas encore de
+            # modèle en production pour ce dataset, et en staging sinon (promotion manuelle ensuite).
+            previous = db.query(models.ModelVersion).filter(models.ModelVersion.dataset_id == dataset.id).all()
+            next_number = max([v.version_number for v in previous], default=0) + 1
+            has_production = any(v.status == models.ModelStatusEnum.en_production for v in previous)
+            target = config.get("target_status") or ("staging" if has_production else "en_production")
+            to_production = target == "en_production"
+            if to_production:
+                for v in previous:
+                    if v.status == models.ModelStatusEnum.en_production:
+                        v.status = models.ModelStatusEnum.archive
+
             new_version = models.ModelVersion(
                 dataset_id=dataset.id,
                 mlflow_run_id=result["mlflow_run_id"],
-                version_number=1,
-                status=models.ModelStatusEnum.en_production,
+                version_number=next_number,
+                status=models.ModelStatusEnum.en_production if to_production else models.ModelStatusEnum.staging,
                 metrics=result["metrics"],
-                deployed_at=datetime.utcnow(),
+                deployed_at=datetime.utcnow() if to_production else None,
             )
             db.add(new_version)
             db.commit()
@@ -52,11 +101,16 @@ def execute_initial_training_job(job_id: str, dataset_id: str) -> None:
 
             job.status = models.JobStatusEnum.reussi
             job.new_model_version_id = new_version.id
+            job.progress = 100
+            job.progress_label = "Entraînement terminé"
+            result["training_results"]["published"] = {"version_number": next_number, "status": new_version.status.value}
+            _store_results(job, result)
             db.commit()
             logger.info("Premier modèle entraîné pour le dataset %s (run MLflow %s)", dataset.id, result["mlflow_run_id"])
         else:
             job.status = models.JobStatusEnum.echoue
             job.error_message = result["error_message"]
+            job.progress_label = "Échec de l'entraînement"
             db.commit()
             logger.warning("Échec de l'entraînement initial pour le dataset %s : %s", dataset.id, result["error_message"])
     finally:
@@ -101,7 +155,12 @@ def execute_retraining_job(job_id: str) -> None:
         dataset = db.query(models.Dataset).filter(models.Dataset.id == old_version.dataset_id).first()
         drift_level = scenario_state.get_drift_level(model_version_id)
 
-        result = train_and_log_model(dataset=dataset, drift_level=drift_level)
+        config = _job_config(job)
+        result = train_and_log_model(
+            dataset=dataset, drift_level=drift_level,
+            algorithms=config.get("algorithms"), balancing=config.get("balancing"),
+            progress=_progress_updater(job_id),
+        )
 
         job.finished_at = datetime.utcnow()
 
@@ -121,6 +180,9 @@ def execute_retraining_job(job_id: str) -> None:
 
             job.status = models.JobStatusEnum.reussi
             job.new_model_version_id = new_version.id
+            job.progress = 100
+            job.progress_label = "Entraînement terminé"
+            _store_results(job, result)
             db.commit()
 
             # Le modèle vient de changer : on repart d'un niveau de dérive à
@@ -135,6 +197,7 @@ def execute_retraining_job(job_id: str) -> None:
         else:
             job.status = models.JobStatusEnum.echoue
             job.error_message = result["error_message"]
+            job.progress_label = "Échec de l'entraînement"
             db.commit()
             logger.warning("Échec du ré-entraînement pour le modèle %s : %s", model_version_id, result["error_message"])
 

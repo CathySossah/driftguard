@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine
-from app.routers import auth, users, datasets, model_versions, monitoring, alerts, retraining, predictions, audit
+from app.routers import auth, users, datasets, model_versions, monitoring, alerts, retraining, predictions, audit, settings
 from app.services.scheduler import start_scheduler, stop_scheduler
 from app.migrations import ensure_schema
 from app.bootstrap import run_bootstrap
@@ -65,6 +65,7 @@ app.include_router(alerts.router)
 app.include_router(retraining.router)
 app.include_router(predictions.router)
 app.include_router(audit.router)
+app.include_router(settings.router)
 
 
 @app.get("/")

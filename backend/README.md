@@ -233,6 +233,61 @@ Les adaptations sont consignées dans le paramètre MLflow `notes`. Seuls échec
 colonne cible identifiable, aucune ligne avec cible renseignée, ou aucune variable explicative.
 **Avec très peu de données, les métriques sont peu fiables** : à signaler dans le mémoire.
 
+## Paramètres de surveillance (page Paramètres)
+
+- `GET/PATCH /settings/` : seuil d'alerte (part de variables en dérive), seuil global de p-value et
+  seuils par variable. Stockés en base (`app_settings`), appliqués dès le cycle de monitoring suivant.
+- `GET /settings/variables` : variables observées au dernier cycle (pour le tableau des seuils par variable).
+- Correction : pour les tests à **distance** (Wasserstein, Jensen-Shannon, utilisés sur les grands jeux
+  de données), une variable dérive quand la distance est **grande** ; l'ancien tableau « Dérive par
+  variable » inversait ce cas.
+- Tests : `python test_drift_thresholds.py` (rapide, sans serveur), `python test_settings.py` (API + Evidently).
+
+## Cycle de vie des modèles (page Modèles)
+
+- Statuts : `en_test` → `staging` → `en_production` → `archive`. Un seul modèle en production par
+  dataset : mettre une version en production archive automatiquement la précédente.
+- `PATCH /models/{id}/status` (admin) change le statut d'une version ; chaque changement est inscrit
+  au journal d'audit (`model.status_changed`).
+- Entraînement depuis l'onglet Datasets : sans choix explicite, la nouvelle version va en production
+  s'il n'y a pas encore de modèle en production pour ce dataset, et en **staging** sinon (jamais de
+  remplacement silencieux d'un modèle en production). Le ré-entraînement déclenché par une alerte
+  validée publie directement en production, comme avant.
+- Seuls les modèles en production servent aux prédictions et au monitoring automatique.
+
+## Alertes par e-mail
+
+- À la création d'une alerte, les administrateurs reçoivent un e-mail (score, variables en dérive, lien
+  pour valider). L'envoi se fait en arrière-plan et ne bloque jamais le monitoring.
+- Trois modes (voir `.env.example`, priorité dans cet ordre) : API HTTPS de **Resend** (`RESEND_API_KEY`,
+  **gratuit, sans carte bancaire**), API HTTPS de **Brevo** (`EMAIL_FROM` + `BREVO_API_KEY`, parfois payant) ou
+  SMTP (`SMTP_HOST`...). **Render bloque les ports SMTP sur les services gratuits** : utilisez Resend.
+- Resend sans domaine vérifié : l'expéditeur est `onboarding@resend.dev` et les e-mails ne sont délivrés qu'à
+  l'adresse e-mail du compte Resend. Créez donc le compte Resend avec l'adresse de l'administrateur. Pour écrire
+  à plusieurs personnes, il faut vérifier un domaine chez Resend (puis définir `EMAIL_FROM`).
+- Page Paramètres : activer/désactiver les e-mails, voir l'état du service, envoyer un e-mail de test.
+- En local, écrivez `RESEND_API_KEY` dans `backend/.env` (voir `.env.example`) : le fichier est
+  chargé au démarrage (`app/env_loader.py`) et ignoré par git. Les variables déjà définies (Render, terminal)
+  sont prioritaires. Redémarrez le serveur après toute modification.
+- Test sans réseau : `python test_email_service.py`.
+
+## Entraînement : algorithmes, équilibrage, progression (onglet Datasets)
+
+- `POST /models/train-initial/{dataset_id}` accepte `{"algorithms": [...], "balancing": "..."}` :
+  algorithmes `random_forest`, `logistic_regression`, `gradient_boosting` ; équilibrage
+  `class_weight` (pondération), `oversampling` (sur-échantillonnage), `undersampling`
+  (sous-échantillonnage), ou `none` (aucun équilibrage, référence). `GET /models/training-options` liste les choix.
+- Tous les algorithmes choisis sont entraînés sur le même jeu d'entraînement et évalués sur le
+  même jeu de test (accuracy, précision, rappel, F1, AUC pour le binaire). Le meilleur (F1, puis
+  accuracy) est publié en production. L'équilibrage ne touche que le jeu d'entraînement.
+- Chaque résultat inclut la matrice de confusion ; l'interface peut les afficher et exporter le tableau en CSV.
+- Réentraîner un dataset qui a déjà un modèle crée une nouvelle version (l'ancienne est archivée).
+- La progression (0-100 %) et les résultats par algorithme sont enregistrés dans le job
+  (`progress`, `progress_label`, `training_results`) ; `GET /retraining-jobs/{id}` permet de
+  les suivre (l'interface l'interroge toutes les 2 secondes).
+- **Mémoire** : comparer plusieurs algorithmes sur un gros fichier est plus gourmand que d'en
+  entraîner un seul (surtout sur un hébergement à 512 Mo).
+
 ## Hébergement à faible mémoire (512 Mo)
 
 - Le modèle de démonstration est **pré-entraîné à la construction de l'image Docker**

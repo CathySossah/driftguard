@@ -31,9 +31,17 @@ class DomainEnum(str, enum.Enum):
 
 
 class ModelStatusEnum(str, enum.Enum):
+    """
+    Cycle de vie d'une version de modèle :
+      en_test       -> modèle fraîchement entraîné, en cours d'évaluation ;
+      staging       -> validé en pré-production, prêt à être promu (non servi aux utilisateurs) ;
+      en_production -> servi aux utilisateurs et surveillé (un seul par dataset) ;
+      archive       -> ancienne version retirée, conservée pour l'historique et la comparaison.
+    """
+    en_test = "en_test"
+    staging = "staging"
     en_production = "en_production"
     archive = "archive"
-    en_test = "en_test"
 
 
 class SeverityEnum(str, enum.Enum):
@@ -143,8 +151,22 @@ class RetrainingJob(Base):
     new_model_version_id = Column(String, ForeignKey("model_versions.id"), nullable=True)
     status = Column(Enum(JobStatusEnum), default=JobStatusEnum.en_cours)
     error_message = Column(Text, nullable=True)
+    # Suivi de l'entraînement : avancement en %, étape en cours, et résultats par algorithme
+    # (configuration choisie, métriques de chaque algorithme, meilleur modèle...).
+    progress = Column(Integer, default=0)
+    progress_label = Column(String, nullable=True)
+    training_results = Column(JSON, nullable=True)
 
     alert = relationship("Alert", back_populates="retraining_job")
+
+
+class AppSetting(Base):
+    """Paramètres de l'application modifiables depuis la page Paramètres (clé -> valeur JSON)."""
+    __tablename__ = "app_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class PredictionLog(Base):

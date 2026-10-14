@@ -21,6 +21,19 @@ def list_retraining_jobs(
     return db.query(models.RetrainingJob).order_by(models.RetrainingJob.started_at.desc()).all()
 
 
+@router.get("/{job_id}", response_model=schemas.RetrainingJobOut)
+def get_retraining_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    _current_user: models.User = Depends(get_current_user),
+):
+    """Un seul job (suivi de la progression d'un entraînement, interrogé régulièrement par l'interface)."""
+    job = db.query(models.RetrainingJob).filter(models.RetrainingJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de ré-entraînement introuvable")
+    return job
+
+
 @router.patch("/{job_id}/complete", response_model=schemas.RetrainingJobOut)
 def complete_job(
     job_id: str,
@@ -88,6 +101,13 @@ def retry_job(
         dataset_id=original.dataset_id,
         triggered_by=admin.id,
         status=models.JobStatusEnum.en_cours,
+        progress=0,
+        progress_label="En attente de démarrage",
+        # La relance reprend les mêmes algorithmes et la même méthode d'équilibrage.
+        training_results=(
+            {"config": (original.training_results or {}).get("config")}
+            if (original.training_results or {}).get("config") else None
+        ),
     )
     db.add(new_job)
     db.commit()

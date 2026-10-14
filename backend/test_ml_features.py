@@ -146,4 +146,36 @@ day = mf.predict_and_explain(bundle["model"], bundle["meta"],
 print("   nuit/mobile :", round(night["probability"], 3), "| jour/desktop :", round(day["probability"], 3))
 assert night["probability"] > day["probability"] + 0.3
 
+print("=== 10. Comparaison d'algorithmes et équilibrage ===")
+r10 = np.random.default_rng(11)
+n10 = 1500
+d10 = pd.DataFrame({"amt": r10.gamma(2, 50, n10), "hour": r10.integers(0, 24, n10), "dev": r10.choice(["m", "d"], n10)})
+d10["fraud"] = r10.binomial(1, np.clip(0.02 + 0.5 * (d10.hour > 21) + 0.2 * (d10.amt > 200), 0, 0.9))
+X10, y10, parts10 = mf.build_real_training_frame(d10, "fraud")
+
+over_X, over_y = mf.balance_training_data(X10, y10, "oversampling")
+assert over_y.value_counts().nunique() == 1 and len(over_y) > len(y10), "sur-échantillonnage : classes à égalité"
+under_X, under_y = mf.balance_training_data(X10, y10, "undersampling")
+assert under_y.value_counts().nunique() == 1 and len(under_y) < len(y10), "sous-échantillonnage : classes à égalité"
+same_X, same_y = mf.balance_training_data(X10, y10, "class_weight")
+assert len(same_y) == len(y10)
+
+for balancing in mf.BALANCING_METHODS:
+    steps = []
+    out = mf.train_and_compare(X10, y10, list(mf.ALGORITHMS), balancing, progress=lambda p, l: steps.append(p))
+    assert len(out["results"]) == 3 and all("metrics" in r for r in out["results"])
+    assert sum(1 for r in out["results"] if r.get("best")) == 1
+    assert steps[0] == 30 and steps[-1] == 90 and steps == sorted(steps), steps
+    assert set(out["metrics"]) == {"accuracy", "f1", "recall", "precision"}
+    print(f"   {balancing:<14} meilleur = {mf.ALGORITHMS[out['best']]:<22}",
+          {r["label"]: r["metrics"]["f1"] for r in out["results"]})
+
+# tout algorithme doit pouvoir servir à la prédiction réelle (probabilités + explication)
+for algo in mf.ALGORITHMS:
+    o = mf.train_and_compare(X10, y10, [algo], "class_weight")
+    m10 = mf.build_meta(parts10, X10, importances=mf.feature_importances(o["model"]), domain="finance")
+    res10 = mf.predict_and_explain(o["model"], m10, {"amt": 300, "hour": 23, "dev": "m"})
+    assert 0 <= res10["probability"] <= 1
+assert mf.normalize_training_options(["inconnu", "random_forest", "random_forest"], "bizarre") == (["random_forest"], "class_weight")
+
 print("\n✅ test_ml_features : OK")

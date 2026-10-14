@@ -61,6 +61,44 @@ job = next(j for j in client.get("/retraining-jobs/", headers=headers).json() if
 print(job)
 assert job["status"] == "reussi", job
 
+print("\n=== 2b. Nouvel entraînement avec 3 algorithmes + sur-échantillonnage : progression, résultats, nouvelle version ===")
+r = client.post(f"/models/train-initial/{dataset_id}", headers=headers, json={
+    "algorithms": ["random_forest", "logistic_regression", "gradient_boosting"],
+    "balancing": "oversampling",
+})
+assert r.status_code == 202, r.text
+job_id = r.json()["id"]
+job = client.get(f"/retraining-jobs/{job_id}", headers=headers).json()
+print({k: job[k] for k in ("status", "progress", "progress_label")})
+assert job["status"] == "reussi" and job["progress"] == 100, job
+results = job["training_results"]
+assert results["config"]["balancing"] == "oversampling"
+assert [x["algorithm"] for x in results["results"]] == ["random_forest", "logistic_regression", "gradient_boosting"]
+assert all("metrics" in x for x in results["results"]) and results["best"] in results["algorithms"]
+versions = client.get("/models/", headers=headers, params={"dataset_id": dataset_id}).json()
+by_number = {v["version_number"]: v for v in versions}
+assert sorted(by_number) == [1, 2]
+# Un modèle est déjà en production pour ce dataset : le nouveau part en STAGING (promotion manuelle)
+assert by_number[1]["status"] == "en_production" and by_number[2]["status"] == "staging", by_number
+assert results["published"] == {"version_number": 2, "status": "staging"}
+
+print("\n=== 2c. Cycle de vie : staging -> production archive l'ancienne version ===")
+r = client.patch(f"/models/{by_number[2]['id']}/status", headers=headers, json={"status": "en_production"})
+assert r.status_code == 200 and r.json()["status"] == "en_production" and r.json()["deployed_at"]
+versions = {v["version_number"]: v for v in client.get("/models/", headers=headers, params={"dataset_id": dataset_id}).json()}
+assert versions[1]["status"] == "archive" and versions[2]["status"] == "en_production"
+assert client.patch(f"/models/{by_number[2]['id']}/status", headers=headers, json={"status": "en_production"}).status_code == 400
+r = client.patch(f"/models/{by_number[1]['id']}/status", headers=headers, json={"status": "staging"})
+assert r.status_code == 200 and r.json()["status"] == "staging"
+assert client.patch(f"/models/{by_number[1]['id']}/status", headers=headers, json={"status": "inconnu"}).status_code == 422
+assert client.patch("/models/introuvable/status", headers=headers, json={"status": "staging"}).status_code == 404
+r = client.post(f"/models/train-initial/{dataset_id}", headers=headers, json={"target_status": "bizarre"})
+assert r.status_code == 422
+r = client.post(f"/models/train-initial/{dataset_id}", headers=headers, json={"algorithms": ["nimporte_quoi"]})
+assert r.status_code == 422
+opts = client.get("/models/training-options", headers=headers).json()
+assert len(opts["algorithms"]) == 3 and len(opts["balancing"]) == 3
+
 print("\n=== 3. Un fichier disparu fait échouer un job : « Relancer » doit retomber sur la vraie cause ===")
 with open(csv_path, "rb") as f:
     r = client.post("/datasets/upload", headers=headers,
