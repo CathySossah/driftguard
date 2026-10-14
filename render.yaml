@@ -24,6 +24,10 @@ services:
         sync: false
       - key: SEED_DEMO
         value: "true"     # enregistre au démarrage un dataset et un modèle de démonstration pré-entraînés
+      - key: FRONTEND_URL
+        value: https://driftguard-web.onrender.com   # lien affiché dans les e-mails d'alerte (adaptez si besoin)
+      - key: RESEND_API_KEY
+        sync: false       # clé API Resend (gratuit ; envoi par HTTPS car les ports SMTP sont bloqués sur Render gratuit)
       - key: LOW_MEMORY
         value: "true"     # hébergeur à 512 Mo : pas de monitoring automatique, imports lourds différés
 

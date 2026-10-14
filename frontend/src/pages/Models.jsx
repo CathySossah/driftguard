@@ -1,20 +1,29 @@
 import { useEffect, useState, useCallback } from 'react'
 import api from '../api/client'
+import { MODEL_STATUSES, statusInfo } from '../utils/modelStatus'
+import { errorMessage } from '../utils/prediction'
 
 export default function Models() {
   const [versions, setVersions] = useState([])
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const [retryingId, setRetryingId] = useState(null)
+  const [datasetNames, setDatasetNames] = useState({})
+  const [statusFilter, setStatusFilter] = useState('')
+  const [changingId, setChangingId] = useState(null)
+  const [error, setError] = useState(null)
+  const [success, setSuccess] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [vRes, jRes] = await Promise.all([
+    const [vRes, jRes, dRes] = await Promise.all([
       api.get('/models/'),
       api.get('/retraining-jobs/'),
+      api.get('/datasets/'),
     ])
     setVersions(vRes.data.sort((a, b) => b.version_number - a.version_number))
     setJobs(jRes.data)
+    setDatasetNames(Object.fromEntries(dRes.data.map((d) => [d.id, d.name])))
     setLoading(false)
   }, [])
 
@@ -30,6 +39,44 @@ export default function Models() {
     }
   }
 
+  // Actions possibles selon le statut actuel
+  function actionsFor(version) {
+    switch (version.status) {
+      case 'en_test':
+        return [['staging', 'Passer en staging'], ['en_production', 'Mettre en production'], ['archive', 'Archiver']]
+      case 'staging':
+        return [['en_production', 'Mettre en production'], ['archive', 'Archiver']]
+      case 'en_production':
+        return [['staging', 'Rétrograder en staging'], ['archive', 'Archiver']]
+      default:
+        return [['staging', 'Remettre en staging'], ['en_production', 'Mettre en production']]
+    }
+  }
+
+  async function changeStatus(version, status) {
+    const current = versions.find((v) => v.dataset_id === version.dataset_id && v.status === 'en_production')
+    let question = null
+    if (status === 'en_production' && current && current.id !== version.id) {
+      question = `Mettre la v${version.version_number} en production archivera la v${current.version_number}, actuellement en production pour ce dataset. Continuer ?`
+    } else if (version.status === 'en_production') {
+      question = `Aucun modèle ne sera plus en production pour ce dataset : les utilisateurs ne pourront plus faire de prédictions. Continuer ?`
+    }
+    if (question && !window.confirm(question)) return
+
+    setChangingId(version.id)
+    setError(null)
+    setSuccess(null)
+    try {
+      await api.patch(`/models/${version.id}/status`, { status })
+      setSuccess(`Version v${version.version_number} : nouveau statut « ${statusInfo(status).label} ».`)
+      await load()
+    } catch (err) {
+      setError(errorMessage(err, 'Le changement de statut a échoué.'))
+    } finally {
+      setChangingId(null)
+    }
+  }
+
   if (loading) return <div className="page-loading"><span className="spinner" /> Chargement...</div>
 
   return (
@@ -41,7 +88,29 @@ export default function Models() {
         </div>
       </div>
 
+      {error && <div className="auth-error">{error}</div>}
+      {success && <div className="auth-error" style={{ background: 'var(--success-bg)', color: 'var(--success)' }}>{success}</div>}
+
       <div className="card">
+        <h3>Statuts d'une version</h3>
+        <div className="grid grid-4">
+          {MODEL_STATUSES.map((st) => (
+            <div key={st.key}>
+              <span className={`badge ${st.badge}`}>{st.label}</span>
+              <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>{st.help}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card section-gap">
+        <div className="field" style={{ maxWidth: 240 }}>
+          <label>Filtrer par statut</label>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="">Tous les statuts</option>
+            {MODEL_STATUSES.map((st) => <option key={st.key} value={st.key}>{st.label}</option>)}
+          </select>
+        </div>
         {versions.length === 0 ? (
           <div className="empty-state">
             <h3>Aucun modèle</h3>
@@ -51,16 +120,14 @@ export default function Models() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Version</th><th>Statut</th><th>Précision</th><th>F1-score</th><th>Déployé le</th><th>MLflow</th></tr>
+                <tr><th>Version</th><th>Dataset</th><th>Statut</th><th>Précision</th><th>F1-score</th><th>Déployé le</th><th>MLflow</th><th>Actions</th></tr>
               </thead>
               <tbody>
-                {versions.map((v) => (
+                {versions.filter((v) => !statusFilter || v.status === statusFilter).map((v) => (
                   <tr key={v.id}>
                     <td>v{v.version_number}</td>
-                    <td>{v.status === 'en_production'
-                      ? <span className="badge ok">En production</span>
-                      : <span className="badge pending">{v.status}</span>}
-                    </td>
+                    <td>{datasetNames[v.dataset_id] || '—'}</td>
+                    <td><span className={`badge ${statusInfo(v.status).badge}`}>{statusInfo(v.status).label}</span></td>
                     <td>{v.metrics?.accuracy ? `${(v.metrics.accuracy * 100).toFixed(1)}%` : '—'}</td>
                     <td>{v.metrics?.f1 ?? '—'}</td>
                     <td>{v.deployed_at ? new Date(v.deployed_at).toLocaleDateString('fr-FR') : '—'}</td>
@@ -68,6 +135,18 @@ export default function Models() {
                       {v.mlflow_run_id ? (
                         <span className="muted" title={v.mlflow_run_id}>{v.mlflow_run_id.slice(0, 8)}...</span>
                       ) : '—'}
+                    </td>
+                    <td>
+                      {actionsFor(v).map(([status, label]) => (
+                        <button
+                          key={status}
+                          className={`btn-sm ${status === 'en_production' ? 'approve' : ''}`}
+                          disabled={changingId === v.id}
+                          onClick={() => changeStatus(v, status)}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </td>
                   </tr>
                 ))}
